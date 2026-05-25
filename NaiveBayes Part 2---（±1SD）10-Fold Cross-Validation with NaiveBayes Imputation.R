@@ -1,3 +1,81 @@
+# ==========================================
+# 1. 环境准备与数据分层切分
+# ==========================================
+library(glmnet)
+library(caret)
+
+# 确保结果可复现
+set.seed(42) 
+
+# 假设你的训练集叫 training_set
+# y 是你的二分类标签（如 "Benign", "Malignant"）
+# 52个特征矩阵为 X，标签为 Y
+X <- as.matrix(training_set[, !names(training_set) %in% c("y")])
+Y <- training_set$y
+
+# 使用 caret 的 createFolds 进行分层抽样，确保每折中动恶性肿瘤的比例一致
+folds <- createFolds(Y, k = 10, list = TRUE, returnTrain = TRUE)
+
+# 初始化一个 List，用来装每 1 折里被 LASSO 临幸的特征
+selected_features_per_fold <- list()
+
+# ==========================================
+# 2. 嵌套交叉验证核心循环（外层循环）
+# ==========================================
+for (i in 1:10) {
+  cat(paste0("\n🚀正在运行第 ", i, " 折交叉验证的特征筛选...\n"))
+  
+  # 严格隔离：利用 index 划分当前折的“内层训练集”与“外层验证集”
+  train_idx <- folds[[i]]
+  
+  X_train_inner <- X[train_idx, ]
+  Y_train_inner <- Y[train_idx]
+  
+  # 【核心严谨处】：LASSO 的 cv.glmnet 只在 X_train_inner 上跑
+  # 这样外层的测试集完全不参与特征选择，绝无信息泄露
+  inner_lasso_cv <- cv.glmnet(
+    x = X_train_inner, 
+    y = Y_train_inner, 
+    family = "binomial", # 二分类模型
+    alpha = 1,           # 1 代表 LASSO
+    nfolds = 5           # 内层循环再切 5 折用来选最佳 lambda
+  )
+  
+  # 提取手稿中指定的 lambda.1se 下的非零系数 [cite: 84]
+  coef_matrix <- coef(inner_lasso_cv, s = "lambda.1se")
+  
+  # 找出非零系数对应的特征行名
+  non_zero_idx <- which(coef_matrix != 0)
+  selected_features <- rownames(coef_matrix)[non_zero_idx]
+  
+  # 剔除截距项 (Intercept)
+  selected_features <- selected_features[selected_features != "(Intercept)"]
+  
+  # 记录当前 fold 筛选出来的特征
+  selected_features_per_fold[[i]] <- selected_features
+  
+  cat(paste0("第 ", i, " 折筛选出 ", length(selected_features), " 个特征。\n"))
+}
+
+# ==========================================
+# 3. 特征频次统计与可视化准备
+# ==========================================
+# 将 10 次循环选出的特征全部解包合并为一个向量
+all_selected_features <- unlist(selected_features_per_fold)
+
+# 统计每个特征出现的绝对频次
+feature_freq_table <- table(all_selected_features)
+
+# 转换为易读的 Data Frame 并排序
+feature_freq_df <- as.data.frame(feature_freq_table)
+colnames(feature_freq_df) <- c("Feature", "Selection_Frequency")
+
+# 按照出现频次从高到低排序（最高为 10 次，最低为 1 次）
+feature_freq_df <- feature_freq_df[order(-feature_freq_df$Selection_Frequency), ]
+
+# 打印最终的特征稳定性排行榜
+print("📊 === 10折嵌套交叉验证中特征稳定性排行榜 ===")
+print(feature_freq_df)
 # Part 2: 10-Fold Cross-Validation with Random Forest Imputation
 # Load required packages
 library(readxl)
